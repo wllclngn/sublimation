@@ -1,0 +1,56 @@
+# Build artifacts
+build/
+*.o
+*.a
+*.so
+*.d
+
+# Binaries
+bench_c
+bench_rust
+bench_rust_direct
+bench_go
+bench_go_direct
+test_basic
+test_tier1
+test_tier2
+test_tier4
+test_tier5
+test_tsan
+
+# Rust
+target/
+*.rlib
+
+# Go
+bench_direct
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Editor / IDE
+.vscode/
+.idea/
+.clangd/
+.cache/
+compile_commands.json
+*.swp
+*.swo
+*~
+
+# Project metadata (local only)
+COMMIT_MESSAGE.txt
+
+# Screenshots
+*.png
+
+# Debug
+core
+vgcore.*
+*.dSYM/
+
+# OS
+.DS_Store
+Thumbs.db
