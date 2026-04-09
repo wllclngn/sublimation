@@ -3,12 +3,13 @@
 // Protocol: argv[1]=size argv[2]=pattern argv[3]=runs
 // Output: one JSON line per (type, algorithm) pair with ns_per_element
 #define _POSIX_C_SOURCE 199309L
-#include "../src/include/sublimation.h"
+#include "../../src/include/sublimation.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
 #include <time.h>
+#include <math.h>
 
 static uint64_t now_ns(void) {
     struct timespec ts;
@@ -76,6 +77,62 @@ static void fill_equal_##SUFFIX(T *arr, size_t n) {                            \
     for (size_t i = 0; i < n; i++) arr[i] = (T)42;                            \
 }                                                                              \
                                                                                \
+static void fill_zipfian_##SUFFIX(T *arr, size_t n, uint64_t seed) {           \
+    /* Zipfian via inverse-CDF over R = max(16, n/4) ranks, s = 1.07. */       \
+    bench_lcg_seed(seed);                                                      \
+    size_t R = n / 4;                                                          \
+    if (R < 16) R = 16;                                                        \
+    double *cdf = (double *)malloc(R * sizeof(double));                        \
+    if (!cdf) { fill_random_##SUFFIX(arr, n, seed); return; }                  \
+    double total = 0.0;                                                        \
+    for (size_t k = 0; k < R; k++) {                                           \
+        total += 1.0 / pow((double)(k + 1), 1.07);                             \
+        cdf[k] = total;                                                        \
+    }                                                                          \
+    for (size_t k = 0; k < R; k++) cdf[k] /= total;                            \
+    for (size_t i = 0; i < n; i++) {                                           \
+        double u = (double)(bench_lcg_next() >> 11) * (1.0 / 9007199254740992.0);\
+        size_t lo = 0, hi = R;                                                 \
+        while (lo < hi) {                                                      \
+            size_t mid = lo + (hi - lo) / 2;                                   \
+            if (cdf[mid] < u) lo = mid + 1; else hi = mid;                     \
+        }                                                                      \
+        arr[i] = (T)((int64_t)lo * (int64_t)lo + (int64_t)lo);                 \
+    }                                                                          \
+    free(cdf);                                                                 \
+}                                                                              \
+                                                                               \
+static void fill_sorted_perturbed_##SUFFIX(T *arr, size_t n, uint64_t seed) {  \
+    /* Sorted ascending, then k = max(2, n/100) random pair-swaps. */          \
+    fill_sorted_##SUFFIX(arr, n);                                              \
+    bench_lcg_seed(seed);                                                      \
+    size_t k = n / 100;                                                        \
+    if (k < 2) k = 2;                                                          \
+    for (size_t i = 0; i < k; i++) {                                           \
+        size_t a = (size_t)(bench_lcg_next() >> 33) % n;                       \
+        size_t b = (size_t)(bench_lcg_next() >> 33) % n;                       \
+        T tmp = arr[a]; arr[a] = arr[b]; arr[b] = tmp;                        \
+    }                                                                          \
+}                                                                              \
+                                                                               \
+static void fill_saw_mixed_##SUFFIX(T *arr, size_t n, uint64_t seed) {         \
+    /* Alternating ascending/descending chunks of length 8 + (lcg % 57). */    \
+    bench_lcg_seed(seed);                                                      \
+    size_t i = 0;                                                              \
+    while (i < n) {                                                            \
+        size_t chunk = 8 + (size_t)(bench_lcg_next() % 57);                    \
+        if (chunk > n - i) chunk = n - i;                                      \
+        int dir = (int)(bench_lcg_next() & 1u);                                \
+        T base = (T)(bench_lcg_next() % (uint64_t)n);                          \
+        if (dir == 0) {                                                        \
+            for (size_t kk = 0; kk < chunk; kk++) arr[i + kk] = base + (T)kk;  \
+        } else {                                                               \
+            for (size_t kk = 0; kk < chunk; kk++) arr[i + kk] = base + (T)(chunk - 1 - kk);\
+        }                                                                      \
+        i += chunk;                                                            \
+    }                                                                          \
+}                                                                              \
+                                                                               \
 static void fill_pattern_##SUFFIX(T *arr, size_t n, const char *pattern,       \
                                   uint64_t seed) {                             \
     if (strcmp(pattern, "random") == 0)        fill_random_##SUFFIX(arr,n,seed);\
@@ -85,6 +142,9 @@ static void fill_pattern_##SUFFIX(T *arr, size_t n, const char *pattern,       \
     else if (strcmp(pattern, "few_unique") == 0) fill_few_unique_##SUFFIX(arr,n,seed);\
     else if (strcmp(pattern, "pipe_organ") == 0) fill_pipe_organ_##SUFFIX(arr,n);\
     else if (strcmp(pattern, "equal") == 0)    fill_equal_##SUFFIX(arr, n);    \
+    else if (strcmp(pattern, "zipfian") == 0)  fill_zipfian_##SUFFIX(arr,n,seed);\
+    else if (strcmp(pattern, "sorted_perturbed") == 0) fill_sorted_perturbed_##SUFFIX(arr,n,seed);\
+    else if (strcmp(pattern, "saw_mixed") == 0) fill_saw_mixed_##SUFFIX(arr,n,seed);\
     else fill_random_##SUFFIX(arr, n, seed);                                   \
 }
 

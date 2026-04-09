@@ -201,14 +201,18 @@ def cmd_build(args, source_dir: Path) -> bool:
     print()
 
     # Rust bindings (optional)
+    # Link against the shared library: libsublimation.a contains LTO GIMPLE
+    # objects that rustc/lld can't consume directly. .so is a real ELF and
+    # works without requiring a non-LTO static build.
     rust_dir = source_dir / "bindings" / "rust"
     rust_src = rust_dir / "bench_direct.rs"
     if rust_src.exists() and check_pkg("rustc"):
         log_info("BUILDING Rust bindings")
         ret = run_cmd([
             "rustc", "-O", "--edition", "2021",
-            "-L", str(BUILD_DIR), "-l", "static=sublimation",
+            "-L", str(BUILD_DIR), "-l", "dylib=sublimation",
             "-l", "dylib=pthread", "-l", "dylib=m",
+            "-C", f"link-arg=-Wl,-rpath,{BUILD_DIR}",
             str(rust_src), "-o", str(BUILD_DIR / "bench_rust_direct"),
         ])
         if ret != 0:
@@ -449,9 +453,9 @@ def cmd_bench(args, source_dir: Path) -> bool:
     print()
     log_info("RUNNING BENCHMARKS")
 
-    bench_dir = source_dir / "bench"
+    bench_dir = source_dir / "tests" / "bench"
     if not bench_dir.exists():
-        log_warn("bench/ directory not found")
+        log_warn("tests/bench/ directory not found")
         return True
 
     bench_sources = list(bench_dir.glob("*.c"))

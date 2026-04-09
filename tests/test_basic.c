@@ -252,7 +252,6 @@ TEST(classify_tableau_sorted) {
     sub_profile_t p = sublimation_classify_i64(arr, 100);
     assert(p.disorder == SUB_SORTED);
     assert(p.lds_length == 1);
-    assert(p.tableau_num_rows == 1);
 }
 
 TEST(classify_tableau_reversed) {
@@ -261,20 +260,16 @@ TEST(classify_tableau_reversed) {
     sub_profile_t p = sublimation_classify_i64(arr, 100);
     assert(p.disorder == SUB_REVERSED);
     assert(p.lds_length == 100);
-    assert(p.tableau_num_rows == 100);
 }
 
 TEST(classify_tableau_random) {
     int64_t arr[1000];
     fill_random(arr, 1000, 54321);
     sub_profile_t p = sublimation_classify_i64(arr, 1000);
-    // For random data: LIS ~ 2*sqrt(n) ~ 63, LDS ~ 2*sqrt(n) ~ 63
-    // Both should be > 1 and < n
     assert(p.lis_length > 1);
     assert(p.lis_length < 1000);
     assert(p.lds_length > 1);
     assert(p.lds_length < 1000);
-    assert(p.tableau_num_rows == p.lds_length);
 }
 
 TEST(info_theoretic_bound) {
@@ -521,6 +516,65 @@ TEST(f64_random_10k) {
     free(arr);
 }
 
+// GENERIC INTERFACE (qsort-compatible)
+
+static int cmp_i64(const void *a, const void *b) {
+    int64_t va = *(const int64_t *)a, vb = *(const int64_t *)b;
+    return (va > vb) - (va < vb);
+}
+
+static int cmp_i32(const void *a, const void *b) {
+    int32_t va = *(const int32_t *)a, vb = *(const int32_t *)b;
+    return (va > vb) - (va < vb);
+}
+
+static int cmp_f64(const void *a, const void *b) {
+    double va = *(const double *)a, vb = *(const double *)b;
+    return (va > vb) - (va < vb);
+}
+
+TEST(generic_random_1k) {
+    int64_t arr[1000];
+    fill_random(arr, 1000, 0x6E41C);
+    sublimation(arr, 1000, sizeof(int64_t), cmp_i64);
+    ASSERT_SORTED(arr, 1000);
+}
+
+TEST(generic_random_10k) {
+    int64_t arr[10000];
+    fill_random(arr, 10000, 0x6E42C);
+    sublimation(arr, 10000, sizeof(int64_t), cmp_i64);
+    ASSERT_SORTED(arr, 10000);
+}
+
+TEST(generic_sorted) {
+    int64_t arr[1000];
+    for (size_t i = 0; i < 1000; i++) arr[i] = (int64_t)i;
+    sublimation(arr, 1000, sizeof(int64_t), cmp_i64);
+    ASSERT_SORTED(arr, 1000);
+}
+
+TEST(generic_reversed) {
+    int64_t arr[1000];
+    for (size_t i = 0; i < 1000; i++) arr[i] = (int64_t)(1000 - i);
+    sublimation(arr, 1000, sizeof(int64_t), cmp_i64);
+    ASSERT_SORTED(arr, 1000);
+}
+
+TEST(generic_i32) {
+    int32_t arr[1000];
+    for (size_t i = 0; i < 1000; i++) arr[i] = (int32_t)(1000 - i);
+    sublimation(arr, 1000, sizeof(int32_t), cmp_i32);
+    for (size_t i = 1; i < 1000; i++) assert(arr[i] >= arr[i-1]);
+}
+
+TEST(generic_f64) {
+    double arr[1000];
+    for (size_t i = 0; i < 1000; i++) arr[i] = 1000.0 - (double)i;
+    sublimation(arr, 1000, sizeof(double), cmp_f64);
+    for (size_t i = 1; i < 1000; i++) assert(arr[i] >= arr[i-1]);
+}
+
 int main(void) {
     printf("[sublimation] running tests\n\n");
 
@@ -578,6 +632,15 @@ int main(void) {
     RUN(f64_reversed);
     RUN(f64_few_unique);
     RUN(f64_random_10k);
+
+    // generic interface tests
+    printf("\n  -- generic interface --\n");
+    RUN(generic_random_1k);
+    RUN(generic_random_10k);
+    RUN(generic_sorted);
+    RUN(generic_reversed);
+    RUN(generic_i32);
+    RUN(generic_f64);
 
     printf("\n  %d passed, %d failed\n", tests_passed, tests_failed);
     return tests_failed > 0 ? 1 : 0;

@@ -199,6 +199,85 @@ static void sort16_avx2(int64_t *arr) {
     _mm256_storeu_si256((__m256i *)(arr + 12), d);
 }
 
+// AVX2 sort32: sort two halves of 16, then bitonic merge via 8 YMM registers.
+// All 8 registers fit in the 16 YMM the architecture provides.
+static void sort32_avx2(int64_t *arr) {
+    sort16_avx2(arr);
+    sort16_avx2(arr + 16);
+
+    __m256i a = _mm256_loadu_si256((__m256i *)(arr));
+    __m256i b = _mm256_loadu_si256((__m256i *)(arr + 4));
+    __m256i c = _mm256_loadu_si256((__m256i *)(arr + 8));
+    __m256i d = _mm256_loadu_si256((__m256i *)(arr + 12));
+    __m256i e = _mm256_loadu_si256((__m256i *)(arr + 16));
+    __m256i f = _mm256_loadu_si256((__m256i *)(arr + 20));
+    __m256i g = _mm256_loadu_si256((__m256i *)(arr + 24));
+    __m256i h = _mm256_loadu_si256((__m256i *)(arr + 28));
+
+    // Reverse second half (e..h) to form bitonic sequence
+    __m256i tmp;
+    tmp = avx2_reverse(h); h = avx2_reverse(e); e = tmp;
+    tmp = avx2_reverse(g); g = avx2_reverse(f); f = tmp;
+
+    // Bitonic merge 32: 5 stages of compare-swap pairs
+    // Stage 1: distance 16 (a↔e, b↔f, c↔g, d↔h)
+    avx2_minmax(&a, &e);
+    avx2_minmax(&b, &f);
+    avx2_minmax(&c, &g);
+    avx2_minmax(&d, &h);
+
+    // Stage 2: distance 8 (a↔c, b↔d, e↔g, f↔h)
+    avx2_minmax(&a, &c);
+    avx2_minmax(&b, &d);
+    avx2_minmax(&e, &g);
+    avx2_minmax(&f, &h);
+
+    // Stage 3: distance 4 (a↔b, c↔d, e↔f, g↔h)
+    avx2_minmax(&a, &b);
+    avx2_minmax(&c, &d);
+    avx2_minmax(&e, &f);
+    avx2_minmax(&g, &h);
+
+    // Stage 4: distance 2 within each register (lanes 0,1 vs 2,3)
+    {
+        __m256i sa, ca, mn, mx;
+        #define BITONIC_LANE2(r) do { \
+            sa = _mm256_permute4x64_epi64(r, _MM_SHUFFLE(1, 0, 3, 2)); \
+            ca = AVX2_CMP_GT(r, sa); \
+            mn = AVX2_MIN(r, sa, ca); \
+            mx = AVX2_MAX(r, sa, ca); \
+            r = _mm256_blend_epi32(mn, mx, 0xF0); \
+        } while (0)
+        BITONIC_LANE2(a); BITONIC_LANE2(b); BITONIC_LANE2(c); BITONIC_LANE2(d);
+        BITONIC_LANE2(e); BITONIC_LANE2(f); BITONIC_LANE2(g); BITONIC_LANE2(h);
+        #undef BITONIC_LANE2
+    }
+
+    // Stage 5: distance 1 within each register (adjacent pairs)
+    {
+        __m256i sa, ca, mn, mx;
+        #define BITONIC_LANE1(r) do { \
+            sa = avx2_swap_pairs(r); \
+            ca = AVX2_CMP_GT(r, sa); \
+            mn = AVX2_MIN(r, sa, ca); \
+            mx = AVX2_MAX(r, sa, ca); \
+            r = _mm256_blend_epi32(mn, mx, 0xCC); \
+        } while (0)
+        BITONIC_LANE1(a); BITONIC_LANE1(b); BITONIC_LANE1(c); BITONIC_LANE1(d);
+        BITONIC_LANE1(e); BITONIC_LANE1(f); BITONIC_LANE1(g); BITONIC_LANE1(h);
+        #undef BITONIC_LANE1
+    }
+
+    _mm256_storeu_si256((__m256i *)(arr),      a);
+    _mm256_storeu_si256((__m256i *)(arr + 4),  b);
+    _mm256_storeu_si256((__m256i *)(arr + 8),  c);
+    _mm256_storeu_si256((__m256i *)(arr + 12), d);
+    _mm256_storeu_si256((__m256i *)(arr + 16), e);
+    _mm256_storeu_si256((__m256i *)(arr + 20), f);
+    _mm256_storeu_si256((__m256i *)(arr + 24), g);
+    _mm256_storeu_si256((__m256i *)(arr + 28), h);
+}
+
 #endif // __AVX2__
 
 // ============================================================================

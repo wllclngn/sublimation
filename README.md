@@ -1,50 +1,57 @@
 # sublimation
 
-A spectral graph sort built in C23. sublimation computes the full Young tableau of the input permutation via the Robinson-Schensted correspondence, derives the information-theoretic lower bound on comparisons from the hook length formula (Kahn & Kim 1995), and routes to specialized paths based on the tableau shape: R_eff merge tree for structured data, k-way merge for k-interleaved sorted sequences, O(n) rotation fix for rotated sorted arrays, counting sort for few-unique data, binary insertion sort for low-displacement nearly-sorted data, branchless block partition for random data, AVX2 sorting networks for small arrays. A critically-damped oscillator drives the CUSUM threshold that controls when partition-based sorting yields to spectral seriation. After sorting, sublimation reports its comparison efficiency against the information-theoretic minimum -- the algorithm grades itself.
+A flow-model sort built in C23. sublimation classifies every input by Young tableau shape via patience sorting, derives the information-theoretic lower bound on comparisons from the hook length formula, and routes by tableau shape: spectral R_eff merge tree (effective resistance on the run-boundary Laplacian), k-way merge for k-interleaved sequences, O(n) rotation fix for rotated sorted arrays, counting sort for few-unique data, binary insertion sort for low-displacement nearly-sorted data, layered PCF + BMI2 PEXT + pdqsort-style fat-pivot + AVX2 sort networks for random data, and Jacobi-eigendecomposition spectral fallback when CUSUM detects partition degradation.
+
+Critically-damped oscillator drives the CUSUM threshold. Comparison efficiency reported against the information-theoretic minimum. Type-generic via macro template instantiation across i32, i64, u32, u64, f32, f64. IPS4o-style parallel sort via `sublimation_i64_parallel`.
 
 ## Performance
 
-GCC 15.2.1, `-O2 -march=native`, Arch Linux kernel 6.19, 4C AMD. All values ns/element, best of 5 runs. Comparison points: glibc qsort, inline introsort (median-of-three quicksort + heapsort fallback), Rust `slice::sort_unstable` (ipnsort), Go `slices.Sort` (pdqsort), Python `sorted()` (PowerSort).
+GCC 15.2.1, `-O2 -march=native`, CachyOS kernel 6.19, AMD Ryzen 7 5800XT Zen 3 (8 cores / 16 threads, AVX2 + BMI2, 32 KB L1d per core, 512 KB L2 per core, 32 MB L3 shared). All values ns/element, best of 11 runs, `taskset -c 0`. Comparison points: glibc qsort, inline introsort (median-of-three quicksort + heapsort fallback), Rust `slice::sort_unstable` (ipnsort).
 
-### sublimation vs The World (ns/element at 100K, best of 5)
+### sublimation vs The World (ns/element at 100K, best of 11)
 
-| Pattern | sublimation | Python | introsort | qsort | Go | Rust | vs introsort | vs Rust | vs Python |
-|---------|----------:|----------:|----------:|------:|---:|-----:|-------------:|--------:|----------:|
-| sorted | **1.3** | 10.0 | 6.3 | 25.4 | 0.8 | 0.6 | **4.7x** | 0.46x | **7.7x** |
-| reversed | **1.9** | 10.6 | 7.2 | 33.0 | 1.4 | 0.8 | **3.8x** | 0.42x | **5.6x** |
-| equal | **1.3** | 4.5 | 9.3 | 26.9 | 0.8 | 0.6 | **7.0x** | 0.46x | **3.5x** |
-| pipe_organ | **5.4** | 18.3 | 77.5 | 29.3 | 30.1 | 19.5 | **14.5x** | **3.6x** | **3.4x** |
-| random | **52.6** | 228.1 | 66.2 | 124.3 | 81.0 | 18.1 | **1.3x** | 0.34x | **4.3x** |
-| few_unique | **16.2** | 88.2 | 20.0 | 62.4 | 9.9 | 2.9 | **1.2x** | 0.18x | **5.4x** |
-| nearly | **10.1** | 27.9 | 8.2 | 43.7 | 15.3 | 15.8 | 0.81x | **1.6x** | **2.8x** |
+| Pattern              | sublimation | introsort | qsort  | Rust   | vs introsort | vs qsort  | vs Rust  |
+|----------------------|------------:|----------:|-------:|-------:|-------------:|----------:|---------:|
+| sorted               | **0.13**    | 4.17      | 22.64  | 0.24   | **32.1x**    | **174.2x**| **1.85x**|
+| reversed             | **0.38**    | 4.26      | 25.42  | 0.37   | **11.2x**    | **66.9x** | 0.97x    |
+| equal                | **0.10**    | 5.45      | 22.63  | 0.24   | **54.5x**    | **226.3x**| **2.40x**|
+| pipe_organ           | **2.53**    | 43.57     | 25.12  | 11.44  | **17.2x**    | **9.93x** | **4.52x**|
+| nearly               | **6.20**    | 5.22      | 34.71  | 10.55  | 0.84x        | **5.60x** | **1.70x**|
+| few_unique           | **10.96**   | 12.18     | 47.66  | 1.81   | **1.11x**    | **4.35x** | 0.17x    |
+| random               | **18.64**   | 36.84     | 77.92  | 9.32   | **1.98x**    | **4.18x** | 0.50x    |
+| zipfian              | **16.88**   | 23.87     | 60.37  | 9.33   | **1.41x**    | **3.58x** | 0.55x    |
+| sorted_perturbed     | **5.39**    | 4.52      | 30.28  | 9.35   | 0.84x        | **5.62x** | **1.74x**|
+| saw_mixed            | **14.53**   | 14.67     | 32.73  | 9.36   | **1.01x**    | **2.25x** | 0.64x    |
 
-sublimation beats introsort on 6/7 patterns. Beats Python on 7/7. Beats Go on 4/7. Beats qsort on 7/7. Beats Rust on 2/7 (pipe_organ 3.6x, nearly sorted 1.6x).
+sublimation beats libstdc++ introsort on **8/10 patterns**. Beats glibc qsort on **10/10**, by 2.25x to 226x. Beats Rust ipnsort on **5/10** patterns: sorted/equal (cold-start fast paths), pipe_organ (R_eff merge tree, 4.52x), nearly_sorted (binary isort, 1.70x), and sorted_perturbed (1.74x). Trails Rust ipnsort on uniform random and Zipfian by ~2.0x at this size; the gap closes as n grows.
 
-### sublimation called from other languages (ns/element at 100K)
+`zipfian`, `sorted_perturbed`, `saw_mixed`, and the test-only `antiqsort` McIlroy fixture are new in v1.1.0.
 
-| Pattern | C (direct) | via Python | via Rust | via Go |
-|---------|----------:|----------:|----------:|----------:|
-| sorted | 1.3 | 1.8 | 1.3 | 1.4 |
-| reversed | 1.9 | 2.4 | 2.1 | 2.1 |
-| equal | 1.3 | 1.8 | 1.4 | 1.4 |
-| pipe_organ | 5.4 | 5.8 | 5.1 | 5.7 |
-| random | 52.6 | 45.9 | 41.3 | 43.8 |
-| nearly | 10.1 | 10.8 | 10.1 | 10.2 |
-| few_unique | 16.2 | 20.0 | 15.6 | 15.6 |
+### Random-data size sweep (ns/element, best of 11, `taskset -c 0`)
 
-FFI overhead is negligible. sublimation called from Python, Rust, or Go performs within 10% of the native C call.
+| n          | sublimation | introsort | qsort  | Rust ipnsort | sub vs Rust |
+|-----------:|------------:|----------:|-------:|-------------:|------------:|
+| 1,024      | 23.88       | 30.07     | 57.18  | **7.65**     | 3.12x slower|
+| 10,000     | 17.66       | 32.18     | 66.02  | **8.71**     | 2.03x slower|
+| 100,000    | 19.21       | 40.63     | 83.16  | **10.76**    | 1.78x slower|
+| 1,000,000  | 21.29       | 40.91     | 86.60  | **11.02**    | 1.93x slower|
+| 10,000,000 | 23.34       | 48.60     | 105.64 | **13.78**    | 1.69x slower|
 
-### Core Scaling (1M random, 4C AMD)
+Gap to Rust ipnsort: 3.12x at n=1K, 1.69x at n=10M. Rust ipnsort is the comparison-sort floor on AVX2-only hardware (vqsort and x86-simd-sort beat it but require AVX-512). sublimation beats introsort by 1.26x to 2.12x and qsort by 2.39x to 4.53x at every size on random data.
 
-| Cores | ns/elem | Speedup | Efficiency |
-|------:|--------:|--------:|-----------:|
-| 1 | 97.1 | 1.00x | 100% |
-| 2 | 67.6 | 1.44x | 72% |
-| 4 | 51.0 | 1.90x | 48% |
+### Parallel sort (8 cores / 16 threads, ns/element, random int64)
+
+| n          | serial sublimation | parallel sublimation | speedup | parallel Rust (rayon-shaped) | sub vs serial Rust |
+|-----------:|-------------------:|---------------------:|--------:|-----------------------------:|-------------------:|
+| 100,000    | 19.16              | 19.04                | 1.01x   | 8.39                         | 1.77x slower       |
+| 1,000,000  | 20.76              | 10.72                | 1.94x   | 7.72                         | 1.03x faster       |
+| 10,000,000 | 23.11              | 12.19                | 1.90x   | 7.96                         | 1.13x faster       |
+
+`sublimation_i64_parallel` dispatches to an IPS4o-style parallel pool: each worker classifies its chunk, prefix-sum merges global bucket counts, parallel scatter to global positions, greedy load-balanced per-bucket sort. Sub-linear speedup due to memory bandwidth and the merge phase. `SUB_PARALLEL_THRESHOLD = 250K`; below threshold the parallel entry falls back to serial. At n ≥ 1M, parallel sublimation beats serial Rust `slice::sort_unstable` (1.13x at n=10M). Parallel Rust (rayon-shaped) is ~1.5x ahead of parallel sublimation at every size.
 
 ## Architecture
 
-sublimation is not a portfolio of existing sort algorithms with a classifier in front. It is a flow-model sorting architecture where data moves from an unsorted state (source) toward a sorted state (sink) through a level structure, with the classification pass serving as the initial BFS and the partition/merge serving as the blocking flow DFS.
+Flow-model architecture from Dinic max-flow: classification pass = initial BFS, partition/merge = blocking flow DFS. Connection to sorting via the Robinson-Schensted correspondence on Young tableaux.
 
 ### Classification (Initial BFS)
 
@@ -52,13 +59,13 @@ Single O(n) pass detects: run count, monotone runs, sorted/reversed, max run len
 
 ### Young Tableau and Information-Theoretic Bound
 
-For ambiguous inputs, patience sorting computes the full Young tableau shape λ = (λ₁, λ₂, ..., λ_d) by tracking pile sizes during RSK insertion. The tableau shape is the complete algebraic characterization of the permutation's disorder structure:
+For ambiguous inputs, patience sorting computes the Young tableau shape λ = (λ₁, λ₂, ..., λ_d) by tracking pile sizes during RSK insertion:
 - λ₁ = LIS length (longest increasing subsequence)
 - d = number of rows = LDS length (longest decreasing subsequence)
 - Balanced rows (λ_i ≈ n/d) = d interleaved sorted sequences → k-way merge
 - Single descent with wraparound continuity = rotated sorted array → O(n) fix
 
-The hook length formula (Frame-Robinson-Thrall) computes f^λ = n! / ∏ h(i,j), giving the exact number of standard Young tableaux of shape λ. log₂(f^λ) is the information-theoretic lower bound on comparisons — the minimum bits of information needed to sort any permutation in this equivalence class. After sorting, sublimation reports comparison efficiency: `actual_comparisons / info_theoretic_bound`. The algorithm knows how close it got to the mathematical minimum.
+The hook length formula (Frame-Robinson-Thrall) computes f^λ = n! / ∏ h(i,j), the number of standard Young tableaux of shape λ. log₂(f^λ) is the information-theoretic lower bound on comparisons. sublimation reports `actual_comparisons / info_theoretic_bound` after every sort.
 
 ### Displacement-Based Routing
 
@@ -67,9 +74,25 @@ For nearly-sorted data, the classifier tracks `max_descent_gap` -- the largest v
 - `run_count > 16, max_descent_gap <= sqrt(n)`: small perturbation, binary insertion sort -- O(n + inversions), 99% of elements skip in one comparison
 - `run_count > 16, max_descent_gap > sqrt(n)`: large displacement, lightweight quicksort
 
-### Partition (Level Construction)
+### Random-Data Path
 
-2-way unrolled branchless block Lomuto partition with write prefetch. Median-of-three pivot selection (ninther for large arrays). Two elements per iteration, independent comparisons overlapped in the superscalar pipeline. Conditional pointer advance compiles to CMOVcc on x86. EWMA tracks partition quality. CUSUM with oscillator-controlled threshold detects degradation.
+For data the classifier tags `SUB_RANDOM`, sublimation runs a four-layer pipeline.
+
+**Layer 1: Linear PCF bucketing** (Sato-Matsui 2024). Sample S ∈ [256, 1024] elements at equal stride, sort the sample, derive lo_v and hi_v from the [5%, 95%] envelope expanded by a 10% margin and clamped to the actual sample extrema. Compute slope = B / (hi_v - lo_v + 1) where B is dynamic: `B = clamp(ceil(n / 24000), 256, 4096)`. The bucket index for each element is one fmul + cvtsd2si + clamp -- recomputed inline in both the histogram pass and the scatter pass (no `bucket_idx[n]` side array, saving 2n bytes of memory traffic). Scatter via 256-4096 software write-combine buffers (one cache line per bucket) keeps TLB pressure bounded. The dynamic-B formula clamps to 256 for n ≤ 6.1M (the empirical local optimum at common sizes) and grows for larger n to keep each bucket inside L2 cache.
+
+**Layer 2: Per-bucket AVX2 quicksort.** Each bucket sub-sort runs the AVX2 quicksort engine (`avx2_quicksort_with_scratch_i64`), which is iterative (no call overhead), uses smaller-half-first recursion (stack bounded at log n), and threshold-switches its partition primitive at L1-fit (~4096 elements):
+- **Above the threshold**: in-place block partition via BMI2 `PEXT` (Edelkamp-Weiss BlockQuicksort + AVX2/BMI2 inner loop). For each 16-element block, four `vpcmpgtq` instructions produce a 16-bit "wrong-side" mask; `_pdep_u64(mask, 0x1111111111111111)` expands each set bit to a nibble; bit-fill with two ORs produces a nibble mask; `_pext_u64(0xFEDCBA9876543210, mask)` packs the nibble-indices of "wrong" elements into a 64-bit register. Walk left/right block index lists, swap pairs in place. Memory traffic per partition level drops from 4n bytes (read arr → write scratch → read scratch → write arr) to 2n bytes (read arr → write arr in-place).
+- **Below the threshold**: AVX2 vpcompressq emulation via a 16-entry shuffle table. Partition is out-of-place via a scratch buffer, but processes 4 i64 elements per `vpermd`. The SIMD parallelism dominates inside L1 where memory traffic isn't the bottleneck.
+
+**Layer 3: Pdqsort-style fat-pivot equivalence-class detection.** After each partition, a 4-element probe checks the right-side array for elements equal to the pivot. On unique-value data the probe exits in 1-4 compares. On duplicate-heavy data (Zipfian, hash-clustered, categorical) the probe fires; a Lomuto-style sweep gathers all equal-to-pivot elements adjacent to the pivot; the right recursion skips the entire equivalence class. Without this layer, 2-way Lomuto degrades on duplicate-heavy inputs because all duplicates of the pivot pile onto the same side.
+
+**Layer 4: AVX2 sorting networks at the leaves** (AlphaDev-shaped). At `len < 32` the recursion drops into `sub_small_sort_i64`, which dispatches to size-specific AVX2 networks: `sort4_avx2`, `sort8_avx2`, `sort16_avx2`, `sort32_avx2`. Fully vectorized (one YMM register holds 4 i64s) and branchless (`vpcmpgtq`/`vpermq`/`vpblendvb` chains, no data-dependent control flow). Bose-Nelson networks in the cmov-shape family of AlphaDev (Mankowitz et al., Nature 2023).
+
+At n=100K random int64 on the 5800XT: 18.64 ns/elem, 1.98x faster than libstdc++ introsort, 2.00x slower than Rust ipnsort. Gap to Rust narrows from 3.12x at n=1K to 1.69x at n=10M.
+
+### Partition (Structured-Data Path)
+
+For data routed through the adaptive sort engine in `sort_impl.h` (the structured-data path), partition is a 2-way unrolled branchless block Lomuto with write prefetch. Median-of-three pivot selection (ninther for large arrays). Two elements per iteration, independent comparisons overlapped in the superscalar pipeline. Conditional pointer advance compiles to CMOVcc on x86. EWMA tracks partition quality. CUSUM with oscillator-controlled threshold detects degradation and triggers spectral fallback.
 
 ### Spectral Fallback
 
@@ -93,11 +116,11 @@ Recursive for shallow depth (branch predictor friendly). Explicit stack with 128
 
 ### Parallel Sort (IPS4o-style BSP)
 
-Parallel bucket distribution: each worker classifies its chunk independently (no contention), prefix-sum merge of bucket counts, parallel scatter to global positions, greedy load-balanced per-bucket sort. 4x bucket overpartitioning for load balance. Classification + scatter is O(n/p), removing the Amdahl bottleneck. Auto-dispatches for n >= 100K. Workers sort their buckets using the full sequential flow model independently.
+Parallel bucket distribution: each worker classifies its chunk independently (no contention), prefix-sum merge of bucket counts, parallel scatter to global positions, greedy load-balanced per-bucket sort. 4x bucket overpartitioning for load balance. Classification + scatter is O(n/p), removing the Amdahl bottleneck. `sublimation_i64_parallel` auto-dispatches at `SUB_PARALLEL_THRESHOLD = 250K`. Workers sort their buckets using the full sequential flow model independently.
 
 ### Sorting Networks
 
-Optimal comparison counts for n = 2-8 (verified against all 40,320 permutations for n=8). Bose-Nelson networks for 7-8. AVX2 vectorized sort-4, sort-8, and sort-16 via bitonic merge networks using `_mm256_cmpgt_epi64` + `_mm256_blendv_epi8` (falls back to scalar on non-AVX2). Sort-8 prefix + insertion sort for 9-15. Standard insertion sort for 17-32.
+Optimal comparison counts for n = 2-8 (verified against all 40,320 permutations for n=8). Bose-Nelson networks for 7-8. AVX2 vectorized sort-4, sort-8, sort-16, and sort-32 via bitonic merge networks using `_mm256_cmpgt_epi64` + `_mm256_blendv_epi8` (falls back to scalar on non-AVX2). Branchless cmov-shape comparators throughout, the same family as AlphaDev's RL-discovered routines. Used as the leaf base case for both the structured-data partition and the random-data quicksort recursion.
 
 ## Build & Install
 
@@ -111,7 +134,7 @@ Optimal comparison counts for n = 2-8 (verified against all 40,320 permutations 
 ./install.py status       # Show build/install status
 ```
 
-Requires GCC 13+ or Clang 16+ with C23 support. No external dependencies.
+Requires GCC 13+ or Clang 16+ with C23 support, BMI2 (PEXT) and AVX2 for the random-data fast path. No external dependencies.
 
 ```bash
 # Full test suite: correctness + sanitizers + cross-language + benchmarks + scaling
@@ -125,7 +148,9 @@ python3 tests/bench-sublimation.py --stats   # p50/p95/p99/stddev, 11 runs with 
 # Results logged to ~/.cache/sublimation/ (Prometheus + human-readable)
 ```
 
-843K tests across all 6 numeric types (i32, i64, u32, u64, f32, f64). Includes: exhaustive permutation testing for all types (n=1..8, all permutations, including float edge cases: NaN, INF, -0.0, denormals), Bentley-McIlroy 5x6 matrix (1,740 combinations), McIlroy dynamic adversary, 15 adversarial patterns across all types, comparison-count bound enforcement, ThreadSanitizer, AddressSanitizer, UBSan, differential fuzzing (libFuzzer vs qsort), cross-language roundtrip (Python, Rust, Go).
+843,240 tests across all 6 numeric types (i32, i64, u32, u64, f32, f64). Includes: exhaustive permutation testing for all types (n=1..8, all permutations, including float edge cases NaN, INF, -0.0, denormals), Bentley-McIlroy 5x6 matrix (1,740 combinations), McIlroy 1999 dynamic adversarial input with subquadratic wall-clock budget verification, Zipfian-distributed input, sorted-with-perturbation, alternating ascending/descending chunks, 15 additional adversarial patterns across all types, comparison-count bound enforcement, ThreadSanitizer, AddressSanitizer, UBSan, differential fuzzing (libFuzzer vs qsort), cross-language roundtrip (Python, Rust, Go).
+
+v1.1.0 fixtures: `test_zipfian`, `test_sorted_perturbed`, `test_saw_mixed`, `test_antiqsort`. `test_antiqsort` enforces a tiered wall-clock budget (1ms / 5ms / 25ms / 250ms across n ∈ {100, 1K, 10K, 100K}) catching quadratic regressions.
 
 ## Usage
 
@@ -154,9 +179,8 @@ printf("comparisons: %lu, info bound: %.0f, efficiency: %.1f%%\n",
 
 // Classification only (inspect without sorting)
 sub_profile_t profile = sublimation_classify_i64(arr, n);
-printf("LIS: %zu, LDS: %zu, tableau rows: %zu, interleave k: %zu\n",
-       profile.lis_length, profile.lds_length,
-       profile.tableau_num_rows, profile.interleave_k);
+printf("LIS: %zu, LDS: %zu (tableau rows), interleave k: %zu\n",
+       profile.lis_length, profile.lds_length, profile.interleave_k);
 
 // Explicit parallel (specify thread count)
 sublimation_i64_parallel(arr, 1000000, 8);
@@ -193,13 +217,20 @@ gcc -O2 myapp.c -lsublimation -lpthread -lm -o myapp
 - Dinic. "Algorithm for Solution of a Problem of Maximum Flow in Networks with Power Estimation." Soviet Math. Doklady 1970. *(BFS level graph + DFS blocking flow. Architectural ancestor of sublimation's flow-model sort.)*
 - Goldberg, Tarjan. "A New Approach to the Maximum-Flow Problem." J. ACM 1988. *(Push-Relabel with gap optimization. Gap heuristic run pruning.)*
 
-### Sorting Algorithms (Comparison Points)
-- Musser. "Introspective Sorting and Selection Algorithms." SPE 1997. *(Introsort: quicksort + heapsort fallback.)*
-- Peters. "Pattern-defeating Quicksort." arXiv:2106.05123, 2021. *(pdqsort: Rust and Go's default sort.)*
-- Edelkamp, Weiss. "BlockQuicksort: Avoiding Branch Mispredictions in Quicksort." ESA 2016. *(Block partition technique.)*
-- Axtmann, Witt, Ferizovic, Sanders. "In-Place Parallel Super Scalar Samplesort (IPS4o)." ESA 2017. *(Parallel bucket distribution pattern.)*
-- Bentley, McIlroy. "Engineering a Sort Function." Software--Practice and Experience 1993. *(Canonical sort testing methodology.)*
-- McIlroy. "A Killer Adversary for Quicksort." Software--Practice and Experience 1999. *(Dynamic adversarial input construction.)*
+### Sorting Algorithms (Comparison Points and Direct Influences)
+- Sato, Matsui. "PCF Learned Sort: Linear Cost via Cumulative Distribution Functions." TMLR 2024. arXiv:2405.07122. *(The linear PCF wrapper used at the top of sublimation's random-data path.)*
+- Mankowitz, Michi, Zhernov, Gelmi, Selvi, Paduraru, Leurent, Iqbal, Lespiau, Ahern, Köppe, Millikin, Gaffney, Elster, Broshear, Gao, Davies, Kohli, Vinyals, Hassabis, Silver. "Faster sorting algorithms discovered using deep reinforcement learning." Nature 618:257-263, 2023. *(AlphaDev. Branchless cmov-shape sorting networks at the leaves of the random-data quicksort.)*
+- Edelkamp, Weiss. "BlockQuicksort: Avoiding Branch Mispredictions in Quicksort." ESA 2016. arXiv:1604.06697. *(Block partition with offset-buffer compaction. The basis for sublimation's PEXT in-place block partition.)*
+- Peters. "Pattern-defeating Quicksort." arXiv:2106.05123, 2021. *(pdqsort: Rust and Go's default sort. The fat-pivot equivalence-class detector in sublimation's random-data quicksort is the same shape as pdqsort's fat-pivot path.)*
+- Bergdoll, Peters. "ipnsort: Efficient, Generic and Robust Unstable Sort." 2024. *(The current Rust standard library `slice::sort_unstable`. Primary comparison point for sublimation's random-data path.)*
+- Musser. "Introspective Sorting and Selection Algorithms." SPE 1997. *(Introsort: quicksort + heapsort fallback. libstdc++ `std::sort`.)*
+- Axtmann, Witt, Ferizovic, Sanders. "In-Place Parallel Super Scalar Samplesort (IPS4o)." ESA 2017. *(Parallel bucket distribution pattern used in `sublimation_i64_parallel`.)*
+- Bentley, McIlroy. "Engineering a Sort Function." Software--Practice and Experience 1993. *(Canonical sort testing methodology and the staggered/plateau adversarial patterns used in sublimation's test fixtures.)*
+- McIlroy. "A Killer Adversary for Quicksort." Software--Practice and Experience 1999. *(Dynamic adversarial input construction. Ported into `tests/test_antiqsort.c` as a permanent regression guard with wall-clock budget verification.)*
+
+## Project Status
+
+4,559 lines of C across `src/` (5 source files, 4 type-template impl headers, 5 internal/public headers). 3,727 lines of test harness across 15 C test files plus the bench driver. 4 research documents in `research/`. 843,240 tests across all 6 numeric types pass on every `python3 tests/test.py` invocation. ThreadSanitizer clean (0 races). AddressSanitizer clean (0 errors). Cross-language roundtrip clean.
 
 ## License
 

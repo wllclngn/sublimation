@@ -30,11 +30,11 @@ PROJECT_DIR = SCRIPT_DIR.parent
 BUILD_DIR = PROJECT_DIR / "build"
 SRC_DIR = PROJECT_DIR / "src"
 TEST_DIR = SCRIPT_DIR  # tests/ is where we are
-BENCH_DIR = PROJECT_DIR / "bench"
+BENCH_DIR = SCRIPT_DIR / "bench"
 LOG_DIR = Path.home() / ".cache" / "sublimation"
 
 VERBOSE = False
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 
 # LOGGING ([HH:MM:SS] [LEVEL]   message)
@@ -200,6 +200,10 @@ def test_c_suites(R):
         ("bentley_mcilroy", TEST_DIR / "test_bentley_mcilroy.c", 120),
         ("types",       TEST_DIR / "test_types.c",       300),
         ("adversarial_types", TEST_DIR / "test_adversarial_types.c", 300),
+        ("sorted_perturbed",  TEST_DIR / "test_sorted_perturbed.c",  120),
+        ("zipfian",           TEST_DIR / "test_zipfian.c",           120),
+        ("saw_mixed",         TEST_DIR / "test_saw_mixed.c",         120),
+        ("antiqsort",         TEST_DIR / "test_antiqsort.c",         300),
     ]:
         if not src.exists():
             R.skip(name, "source not found")
@@ -250,6 +254,21 @@ def test_tsan(R):
         count = m.group(1) if m else "?"
         R.ok(f"tsan: {count} tests, 0 races")
 
+    # tier5 under TSan (exercises parallel path)
+    tier5_src = TEST_DIR / "test_tier5.c"
+    if tier5_src.exists():
+        tsan_tier5 = compile_c("test_tsan_tier5", tier5_src,
+                               ["-O1", "-g", "-fsanitize=thread"], "libsublimation_tsan.a")
+        if tsan_tier5:
+            ret, stdout, stderr = run_cmd([str(tsan_tier5)], timeout=120)
+            races = [l for l in stderr.split('\n') if 'ThreadSanitizer' in l and 'WARNING' in l]
+            if races:
+                R.fail(f"tsan_tier5: {len(races)} race(s)", '\n'.join(races[:3]))
+            else:
+                m = re.search(r'(\d+)\s+passed', stdout)
+                count = m.group(1) if m else "?"
+                R.ok(f"tsan_tier5: {count} tests, 0 races")
+
 
 # ADDRESS SANITIZER
 
@@ -296,6 +315,24 @@ def test_asan(R):
         m = re.search(r'(\d+)\s+passed', stdout)
         count = m.group(1) if m else "?"
         R.ok(f"asan: {count} tests, 0 errors")
+
+    # tier5 under ASan (exercises parallel path + spectral allocations)
+    tier5_src = TEST_DIR / "test_tier5.c"
+    if tier5_src.exists():
+        asan_tier5 = compile_c("test_asan_tier5", tier5_src,
+                               ["-O1", "-g", "-fsanitize=address,undefined", "-fno-omit-frame-pointer"],
+                               "libsublimation_asan.a")
+        if asan_tier5:
+            ret, stdout, stderr = run_cmd([str(asan_tier5)], timeout=120, env=env)
+            asan_errors = [l for l in stderr.split('\n')
+                           if 'ERROR: AddressSanitizer' in l or 'ERROR: UndefinedBehaviorSanitizer' in l
+                           or 'runtime error:' in l]
+            if asan_errors:
+                R.fail(f"asan_tier5: {len(asan_errors)} error(s)", '\n'.join(asan_errors[:5]))
+            else:
+                m = re.search(r'(\d+)\s+passed', stdout)
+                count = m.group(1) if m else "?"
+                R.ok(f"asan_tier5: {count} tests, 0 errors")
 
 
 # CROSS-LANGUAGE ROUNDTRIP

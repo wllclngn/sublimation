@@ -17,6 +17,72 @@ static void SUB_TYPED(reverse)(SUB_TYPE *arr, size_t n) {
 #define COUNTING_SORT_MAX_K 64
 #endif
 
+// AC-3 constraint propagation: O(1) bucket resolution
+//
+// For k <= 8: branchless comparison chain.
+// Returns the sorted rank of val among the k distinct values.
+// Compiles to CMOVcc/ADD — zero branch mispredictions, pipeline never stalls.
+static size_t SUB_TYPED(find_bucket_small)(SUB_TYPE val, const SUB_TYPE *uniq, size_t k) {
+    size_t idx = 0;
+    for (size_t j = 0; j < k; j++) {
+        idx += (val > uniq[j]);
+    }
+    return idx;
+}
+
+// For k = 9..64: minimal hash table with linear probing.
+// 128-entry table (power of 2, ~2x overprovisioned for k<=64).
+// Stack-allocated by caller (~3KB).
+#ifndef COUNTING_SORT_HASH_SIZE
+#define COUNTING_SORT_HASH_SIZE 128
+#define COUNTING_SORT_HASH_MASK (COUNTING_SORT_HASH_SIZE - 1)
+#endif
+
+typedef struct {
+    SUB_TYPE key;
+    size_t   bucket;
+    bool     occupied;
+} SUB_TYPED(hash_entry_t);
+
+// Type-safe hash: memcpy to uint32/uint64 to avoid UB with float/double.
+static inline uint64_t SUB_TYPED(hash_val)(SUB_TYPE val) {
+    uint64_t bits;
+    if (sizeof(SUB_TYPE) <= 4) {
+        uint32_t tmp;
+        memcpy(&tmp, &val, sizeof(uint32_t));
+        bits = (uint64_t)tmp;
+    } else {
+        memcpy(&bits, &val, sizeof(uint64_t));
+    }
+    return (bits * 0x9E3779B97F4A7C15ull) >> 57;
+}
+
+// Bit-level equality: handles NaN correctly (NaN != NaN by IEEE 754,
+// but memcmp of the bit pattern terminates and matches identical NaNs).
+static inline bool SUB_TYPED(key_eq)(SUB_TYPE a, SUB_TYPE b) {
+    return memcmp(&a, &b, sizeof(SUB_TYPE)) == 0;
+}
+
+static void SUB_TYPED(build_hash)(SUB_TYPED(hash_entry_t) *table,
+                                   const SUB_TYPE *uniq, size_t k) {
+    memset(table, 0, COUNTING_SORT_HASH_SIZE * sizeof(SUB_TYPED(hash_entry_t)));
+    for (size_t i = 0; i < k; i++) {
+        uint64_t h = SUB_TYPED(hash_val)(uniq[i]) & COUNTING_SORT_HASH_MASK;
+        while (table[h].occupied) h = (h + 1) & COUNTING_SORT_HASH_MASK;
+        table[h].key      = uniq[i];
+        table[h].bucket   = i;
+        table[h].occupied = true;
+    }
+}
+
+static size_t SUB_TYPED(find_bucket_hash)(const SUB_TYPED(hash_entry_t) *table,
+                                           SUB_TYPE val) {
+    uint64_t h = SUB_TYPED(hash_val)(val) & COUNTING_SORT_HASH_MASK;
+    // Bit equality: terminates for NaN where != would loop forever
+    while (!SUB_TYPED(key_eq)(table[h].key, val)) h = (h + 1) & COUNTING_SORT_HASH_MASK;
+    return table[h].bucket;
+}
+
 static bool SUB_TYPED(counting_sort_few_unique)(SUB_TYPE *arr, size_t n,
                                                  uint64_t *comparisons,
                                                  uint64_t *swaps) {
@@ -30,6 +96,10 @@ static bool SUB_TYPED(counting_sort_few_unique)(SUB_TYPE *arr, size_t n,
     #define COUNTING_SORT_PROBE 64
     #endif
 
+    // ── Phase 1: Discovery ──────────────────────────────────────────────
+    // Scan all elements to discover distinct values into sorted uniq[].
+    // Binary search is fine here: O(n log k) but k <= 64 so log k <= 6,
+    // and new insertions are rare (at most 64 across the entire array).
     for (size_t i = 0; i < n; i++) {
         SUB_TYPE val = arr[i];
 
@@ -47,26 +117,46 @@ static bool SUB_TYPED(counting_sort_few_unique)(SUB_TYPE *arr, size_t n,
             }
         }
 
-        if (lo < k && uniq[lo] == val) {
-            histogram[lo]++;
-            continue;
+        if (lo < k && SUB_TYPED(key_eq)(uniq[lo], val)) {
+            continue;  // already known — skip (no counting in this phase)
         }
 
         if (k >= COUNTING_SORT_MAX_K) {
             return false;
         }
 
+        // Insert new distinct value into sorted position
         for (size_t j = k; j > lo; j--) {
             uniq[j] = uniq[j - 1];
-            histogram[j] = histogram[j - 1];
         }
         uniq[lo] = val;
-        histogram[lo] = 1;
         k++;
     }
 
     if (k <= 1) return true;
 
+    // ── Phase 2: Histogram (O(1) per element) ──────────────────────────
+    memset(histogram, 0, k * sizeof(size_t));
+
+    if (k <= 8) {
+        // Branchless comparison chain: zero branch mispredictions.
+        // For k=8, that's 8 comparisons per element compiled to ADD —
+        // the CPU pipeline never stalls.
+        for (size_t i = 0; i < n; i++) {
+            size_t bucket = SUB_TYPED(find_bucket_small)(arr[i], uniq, k);
+            histogram[bucket]++;
+        }
+    } else {
+        // Hash table: O(1) amortized with fibonacci hashing.
+        SUB_TYPED(hash_entry_t) htable[COUNTING_SORT_HASH_SIZE];
+        SUB_TYPED(build_hash)(htable, uniq, k);
+        for (size_t i = 0; i < n; i++) {
+            size_t bucket = SUB_TYPED(find_bucket_hash)(htable, arr[i]);
+            histogram[bucket]++;
+        }
+    }
+
+    // ── Phase 3: Scatter ────────────────────────────────────────────────
     size_t write = 0;
     for (size_t j = 0; j < k; j++) {
         size_t count = histogram[j];
@@ -209,7 +299,19 @@ static size_t SUB_TYPED(choose_pivot)(SUB_TYPE *arr, size_t lo, size_t hi,
     return SUB_TYPED(median_of_three)(arr, lo + step, mid, hi - step, comparisons);
 }
 
-// BLOCK LOMUTO PARTITION
+// LOMCYC PARTITION (cyclic permutation Lomuto, Voultapher / Orson Peters)
+//
+// Maintains a "gap" — one array slot whose contents are logically held in a
+// register. Each iteration does 2 stores: one fills the gap (arr[gap_pos] =
+// arr[left]), one places the current element (arr[left] = arr[right]). The
+// gap then moves to the position we just read.
+//
+// The key win over standard branchless Lomuto: the second store (gap fill)
+// depends on the PREVIOUS iteration's read pointer (sequential), NOT on the
+// write pointer. The serial dependency chain on num_lt is broken, allowing
+// the CPU to pipeline iterations.
+//
+// ipnsort uses this. LLVM libc qsort adopted it for ~2.5x speedup.
 static size_t SUB_TYPED(partition_block)(SUB_TYPE *arr, size_t lo, size_t hi,
                                           uint64_t *comparisons, uint64_t *swaps) {
     size_t n = hi - lo + 1;
@@ -218,42 +320,44 @@ static size_t SUB_TYPED(partition_block)(SUB_TYPE *arr, size_t lo, size_t hi,
     size_t pivot_idx = SUB_TYPED(choose_pivot)(arr, lo, hi, comparisons);
     SUB_TYPE pivot = arr[pivot_idx];
 
+    // Move pivot to end
     SUB_SWAP(SUB_TYPE, arr[pivot_idx], arr[hi]);
     (*swaps)++;
 
-    size_t write = lo;
+    // Lomcyc over arr[lo..hi-1]. Lift arr[lo] as the initial gap value.
+    // Comparison counter is batched at the end to avoid memory dep in hot loop.
+    SUB_TYPE gap_val = arr[lo];
+    size_t gap_pos = lo;
+    size_t num_lt = lo;
+    size_t loop_count = 0;
 
-    size_t read = lo;
-    for (; read + 1 < hi; read += 2) {
-        sub_prefetch_w(&arr[write + 4]);
+    for (size_t right = lo + 1; right < hi; right++) {
+        SUB_TYPE val = arr[right];
+        size_t left = num_lt;
+        size_t is_lt = (size_t)(val < pivot);
 
-        (*comparisons) += 2;
-        SUB_TYPE v0 = arr[read];
-        SUB_TYPE v1 = arr[read + 1];
-        int less0 = v0 < pivot;
-        int less1 = v1 < pivot;
-
-        arr[read] = arr[write];
-        arr[write] = v0;
-        write += (size_t)less0;
-
-        arr[read + 1] = arr[write];
-        arr[write] = v1;
-        write += (size_t)less1;
+        arr[gap_pos] = arr[left];   // fill gap with arr[left] (no dep on num_lt chain)
+        arr[left] = val;             // place current element
+        gap_pos = right;             // gap follows sequential read pointer
+        num_lt += is_lt;             // commit
+        loop_count++;
     }
-    for (; read < hi; read++) {
-        (*comparisons)++;
-        SUB_TYPE val = arr[read];
-        int less = val < pivot;
-        arr[read] = arr[write];
-        arr[write] = val;
-        write += (size_t)less;
+    *comparisons += loop_count + 1;
+
+    // Finalize: place gap_val (the original arr[lo]) based on its pivot comparison.
+    if (gap_val < pivot) {
+        arr[gap_pos] = arr[num_lt];
+        arr[num_lt] = gap_val;
+        num_lt++;
+    } else {
+        arr[gap_pos] = gap_val;
     }
 
-    SUB_SWAP(SUB_TYPE, arr[write], arr[hi]);
+    // Place pivot at its final position
+    SUB_SWAP(SUB_TYPE, arr[num_lt], arr[hi]);
     (*swaps)++;
 
-    return write;
+    return num_lt;
 }
 
 // THREE-WAY PARTITION
@@ -601,6 +705,16 @@ void SUB_TYPED(sub_sort_internal)(SUB_TYPE *restrict arr, size_t n, sub_adaptive
         return;
 
     case SUB_RANDOM:
+#if defined(__AVX2__) && defined(SUB_TYPE_IS_I64)
+        // PCF Learned Sort + AVX2 sort-network leaves. See sort.c and
+        // research/RANDOM_EXPERIMENTS.md for the bench history.
+        if (n >= 64) {
+            sub_random_sort_i64(arr, n);
+            // Bookkeeping: estimate comparison count for stats consumers
+            state->comparisons += (uint64_t)n * 4;
+            return;
+        }
+#endif
         SUB_TYPED(push)(arr, 0, n - 1, state, profile.disorder);
         return;
 
@@ -612,51 +726,97 @@ void SUB_TYPED(sub_sort_internal)(SUB_TYPE *restrict arr, size_t n, sub_adaptive
     unreachable();
 }
 
-// PUBLIC API ENTRY POINT
-void SUB_TYPED(sublimation)(SUB_TYPE *restrict arr, size_t n) {
-    if (n <= 1) return;
-
+// FAST PATH DISPATCH
+// Shared logic for public API and parallel entry. Handles counting sort,
+// classification, and fast paths (sorted/reversed/nearly/phased/rotated).
+// Returns true if handled, false if caller should proceed with full sort.
+static bool SUB_TYPED(fast_path_dispatch)(SUB_TYPE *restrict arr, size_t n,
+                                           sub_profile_t *out_profile) {
     // Counting sort: O(n) for k <= 64
     {
         uint64_t cmp = 0, swp = 0;
-        if (SUB_TYPED(counting_sort_few_unique)(arr, n, &cmp, &swp)) return;
+        if (SUB_TYPED(counting_sort_few_unique)(arr, n, &cmp, &swp)) return true;
     }
 
-    sub_profile_t profile = SUB_TYPED(sub_classify_internal)(arr, n);
+    *out_profile = SUB_TYPED(sub_classify_internal)(arr, n);
 
-    if (profile.disorder == SUB_SORTED) return;
-    if (profile.disorder == SUB_REVERSED) {
+    if (out_profile->disorder == SUB_SORTED) return true;
+
+    if (out_profile->disorder == SUB_REVERSED) {
         SUB_TYPED(reverse)(arr, n);
-        return;
+        return true;
     }
 
-    if (profile.disorder == SUB_NEARLY_SORTED) {
-        // Rotated sorted array: O(n) fix
-        if (profile.rotation_point > 0) {
+    if (out_profile->disorder == SUB_NEARLY_SORTED) {
+        if (out_profile->rotation_point > 0) {
             uint64_t swp = 0;
-            SUB_TYPED(fix_rotation)(arr, n, profile.rotation_point, &swp);
-            return;
+            SUB_TYPED(fix_rotation)(arr, n, out_profile->rotation_point, &swp);
+            return true;
         }
-        if (profile.run_count <= 16) {
+        if (out_profile->run_count <= 16) {
             uint64_t cmp = 0;
             SUB_TYPED(sub_spectral_merge)(arr, n, &cmp);
         } else {
             size_t sqrt_n = 1;
             while (sqrt_n * sqrt_n < n) sqrt_n++;
-            if (profile.max_descent_gap <= (int64_t)sqrt_n) {
+            if (out_profile->max_descent_gap <= (int64_t)sqrt_n) {
                 SUB_TYPED(binary_isort)(arr, n);
             } else {
                 SUB_TYPED(light_sort)(arr, n);
             }
         }
-        return;
+        return true;
     }
 
-    // Parallel path: i64 only for now
+    if (out_profile->disorder == SUB_PHASED) {
+        sub_adaptive_t state;
+        sub_adaptive_init(&state, n);
+        SUB_TYPED(sort_phased)(arr, n, out_profile->phase_boundary, &state);
+        return true;
+    }
+
+#if defined(__AVX2__) && defined(SUB_TYPE_IS_I64)
+    // SUB_RANDOM SIMD fast path: skips re-classification in sub_sort_internal.
+    // Guarded at SUB_PARALLEL_THRESHOLD so large-n random falls through and
+    // the serial entry point can auto-dispatch to sublimation_i64_parallel
+    // when >=2 workers are available. The serial entry re-checks workers
+    // and falls back to sub_random_sort_i64 if only 1 worker is usable.
+    if (out_profile->disorder == SUB_RANDOM && n >= 64 && n < SUB_PARALLEL_THRESHOLD) {
+        sub_random_sort_i64(arr, n);
+        return true;
+    }
+#endif
+
+    return false; // caller handles FEW_UNIQUE, SPECTRAL
+}
+
+// PUBLIC API ENTRY POINT
+void SUB_TYPED(sublimation)(SUB_TYPE *restrict arr, size_t n) {
+    if (n <= 1) return;
+
+    sub_profile_t profile;
+    if (SUB_TYPED(fast_path_dispatch)(arr, n, &profile)) return;
+
+    // fast_path returned false. For i64, this means either SUB_RANDOM at
+    // n >= SUB_PARALLEL_THRESHOLD (fast-path guard lets large random fall
+    // through for auto-parallel dispatch), or FEW_UNIQUE past counting_sort,
+    // or SPECTRAL.
 #ifdef SUB_TYPE_IS_I64
     if (n >= SUB_PARALLEL_THRESHOLD) {
-        sublimation_i64_parallel(arr, n, sub_default_num_workers());
-        return;
+        size_t workers = sub_default_num_workers();
+        if (workers >= 2) {
+            sublimation_i64_parallel(arr, n, workers);
+            return;
+        }
+        // Only 1 worker available (taskset/cgroup). Restore the AVX2 PCF
+        // random expert for large random data -- it is faster than the
+        // generic adaptive flow on a single core.
+#if defined(__AVX2__)
+        if (profile.disorder == SUB_RANDOM && n >= 64) {
+            sub_random_sort_i64(arr, n);
+            return;
+        }
+#endif
     }
 #endif
 

@@ -37,7 +37,7 @@ except ImportError:
 SCRIPT_DIR = Path(__file__).parent.resolve()
 PROJECT_DIR = SCRIPT_DIR.parent
 BUILD_DIR = PROJECT_DIR / "build"
-BENCH_DIR = PROJECT_DIR / "bench"
+BENCH_DIR = SCRIPT_DIR / "bench"
 SRC_DIR = PROJECT_DIR / "src"
 
 # Python benchmark support

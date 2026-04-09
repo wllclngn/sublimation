@@ -3,6 +3,68 @@
 // Requires SUB_TYPE and SUB_SUFFIX to be defined before inclusion.
 // E.g. #define SUB_TYPE int64_t / #define SUB_SUFFIX _i64
 
+// ---------- AVX2 VECTORIZED SORTED/REVERSED DETECTION (int64_t only) ----------
+// Defined once (guarded) as concrete int64_t functions.  Called from the
+// templated sub_classify_internal via a compile-time sizeof+signedness gate
+// that the compiler constant-folds away for non-i64 instantiations.
+#if defined(__AVX2__) && !defined(SUB_CLASSIFY_AVX2_DEFINED)
+#define SUB_CLASSIFY_AVX2_DEFINED
+#include <immintrin.h>
+
+// Returns true if arr[0..n) is non-decreasing.
+// Processes 4 int64s per iteration using _mm256_cmpgt_epi64.
+static inline bool sub_avx2_is_sorted_i64(const int64_t *arr, size_t n) {
+    if (n <= 1) return true;
+    size_t i = 0;
+    // SIMD: compare arr[i..i+3] > arr[i+1..i+4]  (detect any descent)
+    for (; i + 4 < n; i += 4) {
+        __m256i prev = _mm256_loadu_si256((const __m256i *)(arr + i));
+        __m256i cur  = _mm256_loadu_si256((const __m256i *)(arr + i + 1));
+        __m256i gt   = _mm256_cmpgt_epi64(prev, cur);  // prev[j] > cur[j]
+        if (_mm256_movemask_epi8(gt) != 0) return false;
+    }
+    // Scalar remainder
+    for (size_t j = (i > 0 ? i : 1); j < n; j++) {
+        if (arr[j] < arr[j - 1]) return false;
+    }
+    return true;
+}
+
+// Returns true if arr[0..n) is non-increasing (fully reversed / descending).
+static inline bool sub_avx2_is_reversed_i64(const int64_t *arr, size_t n) {
+    if (n <= 1) return true;
+    size_t i = 0;
+    // Descent = cur > prev  (ascending step violates reversed order)
+    for (; i + 4 < n; i += 4) {
+        __m256i prev = _mm256_loadu_si256((const __m256i *)(arr + i));
+        __m256i cur  = _mm256_loadu_si256((const __m256i *)(arr + i + 1));
+        __m256i gt   = _mm256_cmpgt_epi64(cur, prev);  // cur[j] > prev[j]
+        if (_mm256_movemask_epi8(gt) != 0) return false;
+    }
+    for (size_t j = (i > 0 ? i : 1); j < n; j++) {
+        if (arr[j] > arr[j - 1]) return false;
+    }
+    return true;
+}
+
+// Returns true if every element equals arr[0].
+static inline bool sub_avx2_is_equal_i64(const int64_t *arr, size_t n) {
+    if (n <= 1) return true;
+    __m256i ref = _mm256_set1_epi64x(arr[0]);
+    size_t i = 0;
+    for (; i + 4 <= n; i += 4) {
+        __m256i v  = _mm256_loadu_si256((const __m256i *)(arr + i));
+        // XOR with ref: any non-zero lane means mismatch
+        __m256i diff = _mm256_xor_si256(v, ref);
+        if (!_mm256_testz_si256(diff, diff)) return false;
+    }
+    for (; i < n; i++) {
+        if (arr[i] != arr[0]) return false;
+    }
+    return true;
+}
+#endif // __AVX2__ && !SUB_CLASSIFY_AVX2_DEFINED
+
 // PATIENCE SORTING (Robinson-Schensted first row)
 // Returns LIS length. If pile_sizes_out is non-NULL, fills it with pile sizes
 // (conjugate partition lambda'). max_pile_size_out receives the LDS length.
@@ -370,12 +432,11 @@ static size_t SUB_TYPED(detect_phase_boundary)(const SUB_TYPE *arr, size_t n) {
 }
 
 // COMPUTE TABLEAU FIELDS from pile sizes (helper)
-// Fills profile's lds_length, tableau_num_rows, info_theoretic_bound, interleave_k
+// Fills profile's lds_length, info_theoretic_bound, interleave_k
 static void SUB_TYPED(compute_tableau_fields)(sub_profile_t *p,
                                                const size_t *pile_sizes, size_t num_piles,
                                                size_t max_pile, size_t n) {
     p->lds_length = max_pile;
-    p->tableau_num_rows = max_pile;
 
     // Hook length bound: only for bounded inputs
     if (n <= SUB_TABLEAU_MAX_N && num_piles <= SUB_TABLEAU_MAX_LIS && max_pile <= 256) {
@@ -450,12 +511,50 @@ sub_profile_t SUB_TYPED(sub_classify_internal)(const SUB_TYPE *arr, size_t n) {
         p.disorder = SUB_SORTED;
         p.lis_length = n;
         p.lds_length = n;
-        p.tableau_num_rows = n;
         p.run_count = 1;
         p.mono_count = 1;
         p.max_run_len = n;
         return p;
     }
+
+    // --- AVX2 fast-path: detect sorted/reversed/equal in ~0.25 cycles/element ---
+    // Compile-time gate: _Generic resolves to 1 only for int64_t, constant-folded
+    // to eliminate dead code for all other type instantiations (including double).
+#ifdef __AVX2__
+    if (_Generic((SUB_TYPE)0, int64_t: 1, default: 0) && n >= 8) {
+        const int64_t *a64 = (const int64_t *)(const void *)arr;
+        // All-equal check (cheapest -- single broadcast + XOR)
+        if (a64[0] == a64[n - 1] && sub_avx2_is_equal_i64(a64, n)) {
+            p.disorder = SUB_SORTED;
+            p.lis_length = n;
+            p.lds_length = n;
+            p.run_count = 1;
+            p.mono_count = 1;
+            p.max_run_len = n;
+            return p;
+        }
+        // Sorted (non-decreasing)
+        if (a64[0] <= a64[n - 1] && sub_avx2_is_sorted_i64(a64, n)) {
+            p.disorder = SUB_SORTED;
+            p.lis_length = n;
+            p.lds_length = 1;
+            p.run_count = 1;
+            p.mono_count = 1;
+            p.max_run_len = n;
+            return p;
+        }
+        // Reversed (non-increasing)
+        if (a64[0] >= a64[n - 1] && sub_avx2_is_reversed_i64(a64, n)) {
+            p.disorder = SUB_REVERSED;
+            p.lis_length = 1;
+            p.lds_length = n;
+            p.run_count = 1;
+            p.mono_count = 1;
+            p.max_run_len = n;
+            return p;
+        }
+    }
+#endif // __AVX2__
 
     SUB_TYPED(sub_run_info_t) runs = SUB_TYPED(count_runs)(arr, n);
     p.run_count = runs.run_count;
@@ -467,7 +566,6 @@ sub_profile_t SUB_TYPED(sub_classify_internal)(const SUB_TYPE *arr, size_t n) {
         p.disorder = SUB_SORTED;
         p.lis_length = n;
         p.lds_length = 1;
-        p.tableau_num_rows = 1;
         return p;
     }
 
@@ -475,7 +573,6 @@ sub_profile_t SUB_TYPED(sub_classify_internal)(const SUB_TYPE *arr, size_t n) {
         p.disorder = SUB_REVERSED;
         p.lis_length = 1;
         p.lds_length = n;
-        p.tableau_num_rows = n;
         return p;
     }
 
@@ -486,7 +583,6 @@ sub_profile_t SUB_TYPED(sub_classify_internal)(const SUB_TYPE *arr, size_t n) {
             p.disorder = SUB_NEARLY_SORTED;
             p.lis_length = n - 1;  // all but the rotation break
             p.lds_length = 2;
-            p.tableau_num_rows = 2;
             p.rotation_point = rot;
             return p;
         }
@@ -546,12 +642,12 @@ sub_profile_t SUB_TYPED(sub_classify_internal)(const SUB_TYPE *arr, size_t n) {
         }
     }
 
-    if (n >= SUB_PATIENCE_THRESHOLD) {
-        SUB_TYPED(patience_sort_with_tableau)(arr, n, &p);
-    } else {
-        p.lis_length = (size_t)((1.0f - p.inversion_ratio) * (float)n);
-        if (p.lis_length < 1) p.lis_length = 1;
-    }
+    // Skip patience sort in sort-path classification — it's O(n log k) with
+    // malloc overhead and the tableau doesn't change routing decisions for
+    // already-classified data. The public sublimation_classify_*() wrapper
+    // computes the tableau on demand for users who want the diagnostic.
+    p.lis_length = (size_t)((1.0f - p.inversion_ratio) * (float)n);
+    if (p.lis_length < 1) p.lis_length = 1;
 
     if (p.disorder == SUB_RANDOM && p.lis_length > n * 3 / 4) {
         p.disorder = SUB_NEARLY_SORTED;

@@ -125,6 +125,29 @@ void SUB_TYPED(sub_small_sort)(SUB_TYPE *arr, size_t n,
         return;
     }
 
-    // n = 17-32: insertion sort
+#if defined(__AVX2__) && defined(SUB_TYPE_IS_I64)
+    if (n == 32) {
+        sort32_avx2(arr);
+        *comparisons += 95;  // bitonic sort-32 comparison count
+        return;
+    }
+    if (n > 16 && n < 32) {
+        // Sort 16, then insertion sort the tail (16..n)
+        sort16_avx2(arr);
+        for (size_t i = 16; i < n; i++) {
+            int64_t key = arr[i];
+            size_t j = i;
+            while (j > 0 && arr[j - 1] > key) {
+                arr[j] = arr[j - 1];
+                j--;
+            }
+            arr[j] = key;
+        }
+        *comparisons += 60 + (n - 16) * 5;
+        return;
+    }
+#endif
+
+    // n = 17-32 fallback: insertion sort
     SUB_TYPED(insertion_sort)(arr, n, comparisons, swaps);
 }

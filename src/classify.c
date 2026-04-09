@@ -48,7 +48,25 @@
 #undef SUB_TYPE
 #undef SUB_SUFFIX
 
-// Public API wrapper (i64 only for now)
-sub_profile_t sublimation_classify_i64(const int64_t *arr, size_t n) {
-    return sub_classify_internal_i64(arr, n);
-}
+// Public API wrappers. Each runs the type-specific classifier and, for
+// ambiguous inputs within the tableau-computation window, augments the
+// profile with the full Young tableau shape (LDS, info-theoretic bound,
+// interleave detection). These are the diagnostic entry points -- the
+// internal sort path skips the tableau for performance.
+#define DEFINE_PUBLIC_CLASSIFY(T, SUFFIX)                                  \
+    sub_profile_t sublimation_classify_##SUFFIX(const T *arr, size_t n) { \
+        sub_profile_t p = sub_classify_internal_##SUFFIX(arr, n);         \
+        if (n >= SUB_PATIENCE_THRESHOLD && n <= SUB_TABLEAU_MAX_N) {      \
+            patience_sort_with_tableau_##SUFFIX(arr, n, &p);              \
+        }                                                                  \
+        return p;                                                          \
+    }
+
+DEFINE_PUBLIC_CLASSIFY(int32_t,  i32)
+DEFINE_PUBLIC_CLASSIFY(int64_t,  i64)
+DEFINE_PUBLIC_CLASSIFY(uint32_t, u32)
+DEFINE_PUBLIC_CLASSIFY(uint64_t, u64)
+DEFINE_PUBLIC_CLASSIFY(float,    f32)
+DEFINE_PUBLIC_CLASSIFY(double,   f64)
+
+#undef DEFINE_PUBLIC_CLASSIFY

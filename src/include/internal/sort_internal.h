@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
+#include <stdatomic.h>
 
 #include "c23_compat.h"
 #include "../sublimation.h"
@@ -14,7 +15,7 @@
 // Thresholds (analogues of flow solver constants)
 SUB_CONSTEXPR size_t SUB_SMALL_THRESHOLD     = 32;   // base case: insertion sort / SIMD network
 SUB_CONSTEXPR size_t SUB_MEDIUM_THRESHOLD    = 128;   // switch from simple to block partition
-SUB_CONSTEXPR size_t SUB_PARALLEL_THRESHOLD  = 100000; // spawn parallel workers
+SUB_CONSTEXPR size_t SUB_PARALLEL_THRESHOLD  = 250000; // spawn parallel workers (below this, serial PCF/adaptive is faster than thread spin-up)
 SUB_CONSTEXPR size_t SUB_CLASSIFY_SAMPLE     = 128;   // sample size for inversion estimation
 SUB_CONSTEXPR size_t SUB_PATIENCE_THRESHOLD  = 256;   // minimum n for patience sorting in classify
 SUB_CONSTEXPR size_t SUB_TABLEAU_MAX_N      = 10000;  // max n for full Young tableau computation
@@ -109,6 +110,26 @@ SUB_INLINE void sub_oscillator_update(float *position, float *velocity,
     if (*position < 0.0f) *position = 0.0f;
     if (*position > 1.0f) *position = 1.0f;
 }
+
+// AVX2 random-data sort path (i64 only).
+//
+// sub_random_sort_i64 is the production SUB_RANDOM entry point: a learned
+// linear-PCF top-level bucketer feeding AVX2 quicksort with sort-network
+// leaves. sub_avx2_random_quicksort_i64 is the underlying engine, exported
+// because sub_random_sort_i64 also calls it to sort its training sample.
+//
+// See src/sort.c and research/RANDOM_EXPERIMENTS.md for the design history,
+// and research/MORATORIUM.md for the moratorium on grader-driven random work.
+#ifdef __AVX2__
+void sub_random_sort_i64(int64_t *arr, size_t n);
+void sub_avx2_random_quicksort_i64(int64_t *arr, size_t n);
+
+// BMI2 PEXT-based in-place block partition (Edelkamp-Weiss + AVX2/PEXT).
+// Partitions arr[lo..hi) around `pivot`. Returns p such that
+// arr[lo..p) < pivot and arr[p..hi) >= pivot. Output is a permutation of input.
+// Exposed for standalone unit testing in tests/test_pext_partition.c.
+size_t block_partition_pext_i64(int64_t *arr, size_t lo, size_t hi, int64_t pivot);
+#endif
 
 // Internal sort functions -- all types
 // Names follow template pattern: base_name + type suffix

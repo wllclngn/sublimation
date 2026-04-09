@@ -13,8 +13,10 @@
 // Classification and scatter are O(n/p), removing the Amdahl bottleneck.
 // Thread creation is minimized: 3 barrier phases, num_workers threads each.
 #define _POSIX_C_SOURCE 200809L
+#define _GNU_SOURCE
 #include "internal/pool.h"
 #include "internal/sort_internal.h"
+#include <sched.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -445,7 +447,17 @@ cleanup:
 }
 
 size_t sub_default_num_workers(void) {
-    long n = sysconf(_SC_NPROCESSORS_ONLN);
+    // Respect cpuset affinity so taskset/cgroup restrictions actually cap
+    // the worker pool. Falls back to system online count if the syscall is
+    // unavailable.
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    long n;
+    if (sched_getaffinity(0, sizeof(set), &set) == 0) {
+        n = CPU_COUNT(&set);
+    } else {
+        n = sysconf(_SC_NPROCESSORS_ONLN);
+    }
     if (n < 1) n = 1;
     if (n > 64) n = 64;
     return (size_t)n;

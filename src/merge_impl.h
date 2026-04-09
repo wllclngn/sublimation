@@ -2,6 +2,8 @@
 //
 // Requires SUB_TYPE and SUB_SUFFIX to be defined before inclusion.
 
+// Constants defined once (not per-type) — guarded because this header
+// is included 6 times via macro template instantiation.
 #ifndef SUB_MERGE_CONSTANTS_DEFINED
 #define SUB_MERGE_CONSTANTS_DEFINED
 SUB_CONSTEXPR size_t SUB_MIN_MERGE = 32;
