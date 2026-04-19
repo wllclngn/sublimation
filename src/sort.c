@@ -386,10 +386,9 @@ void sub_avx2_random_quicksort_i64(int64_t *arr, size_t n) {
 //      branchless leaves.
 //
 // Together this beats a pure AVX2 quicksort by ~24% on uniform random i64
-// data and is the production random-sort path. See research/RANDOM_EXPERIMENTS.md
-// for the full benchmark history that led here. B=256 is the empirically
-// confirmed local optimum across n in [100K, 10M] on this CPU; see
-// research/MORATORIUM.md for the moratorium on grader-driven dynamic-B work.
+// data and is the production random-sort path. B=256 is the empirically
+// confirmed local optimum across n in [100K, 10M] on this CPU; dynamic B
+// at n >= 6.1M tracks L2 fit via a static formula (no learning).
 //
 // References:
 //   - Sato, Matsui. "PCF Learned Sort" arXiv:2405.07122 (TMLR May 2024)

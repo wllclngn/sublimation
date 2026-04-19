@@ -2,7 +2,7 @@
 
 A flow-model sort built in C23. sublimation classifies every input by Young tableau shape via patience sorting, derives the information-theoretic lower bound on comparisons from the hook length formula, and routes by tableau shape: spectral R_eff merge tree (effective resistance on the run-boundary Laplacian), k-way merge for k-interleaved sequences, O(n) rotation fix for rotated sorted arrays, counting sort for few-unique data, binary insertion sort for low-displacement nearly-sorted data, layered PCF + BMI2 PEXT + pdqsort-style fat-pivot + AVX2 sort networks for random data, and Jacobi-eigendecomposition spectral fallback when CUSUM detects partition degradation.
 
-Critically-damped oscillator drives the CUSUM threshold. Comparison efficiency reported against the information-theoretic minimum. Type-generic via macro template instantiation across i32, i64, u32, u64, f32, f64. IPS4o-style parallel sort via `sublimation_i64_parallel`.
+Critically-damped oscillator drives the CUSUM threshold. Comparison efficiency reported against the information-theoretic minimum. Type-generic via macro template instantiation across i32, i64, u32, u64, f32, f64. IPS4o-style parallel sort via `sublimation_i64_parallel`. Alphanumeric (string) sort via `sublimation_strings` + `sublimation_strings_indices` — 4-byte big-endian prefix-pack feeds `sublimation_u64`, iterative MSD radix resolves prefix-collision tie clusters; 2.0-4.5x over `qsort + strcmp`. Struct-sort-by-one-numeric-key via `sublimation_pack_sort_{u32,i32,f32}` — stable for equal keys, zero new kernels. Ships pkg-config, CMake package config, and SONAME-versioned `.so` for distro-clean integration.
 
 ## Performance
 
@@ -25,7 +25,7 @@ GCC 15.2.1, `-O2 -march=native`, CachyOS kernel 6.19, AMD Ryzen 7 5800XT Zen 3 (
 
 sublimation beats libstdc++ introsort on **8/10 patterns**. Beats glibc qsort on **10/10**, by 2.25x to 226x. Beats Rust ipnsort on **5/10** patterns: sorted/equal (cold-start fast paths), pipe_organ (R_eff merge tree, 4.52x), nearly_sorted (binary isort, 1.70x), and sorted_perturbed (1.74x). Trails Rust ipnsort on uniform random and Zipfian by ~2.0x at this size; the gap closes as n grows.
 
-`zipfian`, `sorted_perturbed`, `saw_mixed`, and the test-only `antiqsort` McIlroy fixture are new in v1.1.0.
+`zipfian`, `sorted_perturbed`, `saw_mixed`, and the test-only `antiqsort` McIlroy fixture were added in v1.1.0; alphanumeric (string) sort via `sublimation_strings` is new in v1.2.0.
 
 ### Random-data size sweep (ns/element, best of 11, `taskset -c 0`)
 
@@ -150,7 +150,7 @@ python3 tests/bench-sublimation.py --stats   # p50/p95/p99/stddev, 11 runs with 
 
 843,240 tests across all 6 numeric types (i32, i64, u32, u64, f32, f64). Includes: exhaustive permutation testing for all types (n=1..8, all permutations, including float edge cases NaN, INF, -0.0, denormals), Bentley-McIlroy 5x6 matrix (1,740 combinations), McIlroy 1999 dynamic adversarial input with subquadratic wall-clock budget verification, Zipfian-distributed input, sorted-with-perturbation, alternating ascending/descending chunks, 15 additional adversarial patterns across all types, comparison-count bound enforcement, ThreadSanitizer, AddressSanitizer, UBSan, differential fuzzing (libFuzzer vs qsort), cross-language roundtrip (Python, Rust, Go).
 
-v1.1.0 fixtures: `test_zipfian`, `test_sorted_perturbed`, `test_saw_mixed`, `test_antiqsort`. `test_antiqsort` enforces a tiered wall-clock budget (1ms / 5ms / 25ms / 250ms across n ∈ {100, 1K, 10K, 100K}) catching quadratic regressions.
+v1.1.0 fixtures: `test_zipfian`, `test_sorted_perturbed`, `test_saw_mixed`, `test_antiqsort`. `test_antiqsort` enforces a tiered wall-clock budget (1ms / 5ms / 25ms / 250ms across n ∈ {100, 1K, 10K, 100K}) catching quadratic regressions. v1.2.0 fixtures: `test_strings` (19 alphanumeric scenarios from trivial n=0,1 through n=1M random, adversarial 4 KB shared-prefix, embedded-NUL, and indices-output parity) and `test_pack` (15 scenarios across u32/i32/f32 pack-key sort including stability checks and signed/descending coverage).
 
 ## Usage
 
@@ -185,6 +185,34 @@ printf("LIS: %zu, LDS: %zu (tableau rows), interleave k: %zu\n",
 // Explicit parallel (specify thread count)
 sublimation_i64_parallel(arr, 1000000, 8);
 
+// Alphanumeric (string) sort. Hybrid: 4-byte big-endian prefix-pack feeds
+// sublimation_u64 for the bulk of the work, then iterative MSD radix
+// resolves prefix-collision tie clusters. 2.0-4.5x over qsort+strcmp on
+// the patterns measured (random, sorted, common-prefix, deep-prefix at
+// n=100k, L=16). NOT stable. Capacity n < 2^32.
+const char *names[] = {"banana", "apple", "cherry", "apricot"};
+sublimation_strings(names, 4);
+
+// Length-explicit variant for embedded-NUL or non-NUL-terminated data.
+const char *blobs[] = { ... };
+size_t lens[]      = { ... };
+sublimation_strings_len(blobs, lens, n);
+
+// Index-output variant: sort a vector<Process> by an embedded string
+// field without permuting a pointer scratch vector.
+const char *names_ro[n];        // read-only view
+uint32_t order[n];
+sublimation_strings_indices(names_ro, order, n);
+// Iterate rows by order[i] to visit them in sorted-name order.
+
+// Pack-key sort: sort indices by a companion numeric key array.
+// Stable for equal keys (index as tiebreak). Returns the permutation in
+// the indices array; keys array is untouched.
+float cpu_pct[n];
+uint32_t row_idx[n];
+for (size_t i = 0; i < n; i++) row_idx[i] = (uint32_t)i;
+sublimation_pack_sort_f32(cpu_pct, row_idx, n, true /* descending */);
+
 // qsort-compatible (custom types, delegates to qsort internally)
 sublimation(data, count, sizeof(element), comparator);
 ```
@@ -192,8 +220,23 @@ sublimation(data, count, sizeof(element), comparator);
 Compile:
 
 ```bash
+# Via pkg-config (installed to $PREFIX/lib/pkgconfig/sublimation.pc)
+gcc -O2 myapp.c $(pkg-config --cflags --libs sublimation) -o myapp
+
+# Manual (if not using pkg-config)
 gcc -O2 myapp.c -lsublimation -lpthread -lm -o myapp
 ```
+
+CMake projects:
+
+```cmake
+find_package(Sublimation 1.2 REQUIRED)
+target_link_libraries(my_target PRIVATE Sublimation::sublimation)
+```
+
+The shared library ships with SONAME `libsublimation.so.1` baked in, so
+ldconfig and the dynamic linker resolve ABI-compatible upgrades
+automatically. The soname major version bumps only on ABI break.
 
 ## References
 

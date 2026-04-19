@@ -40,13 +40,6 @@
 #define SUB_NORETURN
 #endif
 
-// [[maybe_unused]]
-#if SUB_HAVE_C23 || (defined(__GNUC__) && __GNUC__ >= 10)
-#define SUB_UNUSED [[maybe_unused]]
-#else
-#define SUB_UNUSED __attribute__((unused))
-#endif
-
 // [[reproducible]] / [[unsequenced]]
 #if SUB_HAVE_C23
 #define SUB_PURE [[reproducible]]

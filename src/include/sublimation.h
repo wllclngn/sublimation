@@ -1,12 +1,16 @@
 // sublimation.h -- Public API for libsublimation
 //
 // Flow-model adaptive sorting. C23 core with Python, Rust, Go interfaces.
-// In-place. No allocation. Caller owns the buffer.
 //
-// Thread safety: every `sublimation_<T>*` entry point is reentrant and
-// thread-safe on disjoint buffers. The only shared state is the learned-
-// sort expert grader (sub_random_sort_i64), which uses atomics for all
-// updates. Concurrent calls on the SAME buffer are undefined behavior.
+// Memory model: the numeric entry points (`sublimation_<T>`) sort in place
+// with no heap allocation. The non-numeric entry points allocate internal
+// scratch: `sublimation_strings` needs ~24n bytes, and
+// `sublimation_pack_sort_<T>` needs n * sizeof(uint64_t). Both expose
+// `_with_scratch` variants for callers that want to manage memory.
+//
+// Thread safety: every entry point is reentrant and thread-safe on disjoint
+// buffers. No process-lifetime shared mutable state. Concurrent calls on
+// the SAME buffer are undefined behavior.
 #ifndef SUBLIMATION_H
 #define SUBLIMATION_H
 
@@ -22,9 +26,9 @@ extern "C" {
 
 // Release version (source-of-truth for the library tag, pkgbuild, tests).
 #define SUBLIMATION_VERSION_MAJOR  1
-#define SUBLIMATION_VERSION_MINOR  1
+#define SUBLIMATION_VERSION_MINOR  2
 #define SUBLIMATION_VERSION_PATCH  0
-#define SUBLIMATION_VERSION_STRING "1.1.0"
+#define SUBLIMATION_VERSION_STRING "1.2.0"
 
 // ABI version. Bumped only when the library ABI breaks; independent from
 // the release version above. Readers should compare this value at runtime
@@ -150,18 +154,22 @@ sub_profile_t sublimation_classify_f64(const double *arr, size_t n) SUB_PURE;
     double *:   sublimation_classify_f64                 \
 )(arr, n)
 
-// Parallel sort (explicit thread count). i64-only in v1.1.0 -- the IPS4o
+// Parallel sort (explicit thread count). i64-only in v1.2.0 -- the IPS4o
 // bucket pool is hard-coded for int64_t. Other types will be added in a
 // later release; for now use the serial `sublimation_<T>` entries.
 SUB_API void sublimation_i64_parallel(int64_t *SUB_RESTRICT arr, size_t n, size_t num_threads);
 
 // Version queries. `sublimation_api_version()` returns SUBLIMATION_API_VERSION
-// (ABI). `sublimation_version()` returns the release string (e.g. "1.1.0").
+// (ABI). `sublimation_version()` returns the release string (e.g. "1.2.0").
 SUB_API int sublimation_api_version(void) SUB_CONST;
 SUB_API const char *sublimation_version(void) SUB_CONST;
 
 #ifdef __cplusplus
 }
 #endif
+
+// Non-numeric entry points. Pulled in as an umbrella so callers including
+// just `sublimation.h` get the strings API without a second include.
+#include "sublimation_strings.h"
 
 #endif // SUBLIMATION_H

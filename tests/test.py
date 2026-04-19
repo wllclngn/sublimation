@@ -34,7 +34,7 @@ BENCH_DIR = SCRIPT_DIR / "bench"
 LOG_DIR = Path.home() / ".cache" / "sublimation"
 
 VERBOSE = False
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
 
 # LOGGING ([HH:MM:SS] [LEVEL]   message)
@@ -204,6 +204,7 @@ def test_c_suites(R):
         ("zipfian",           TEST_DIR / "test_zipfian.c",           120),
         ("saw_mixed",         TEST_DIR / "test_saw_mixed.c",         120),
         ("antiqsort",         TEST_DIR / "test_antiqsort.c",         300),
+        ("strings",           TEST_DIR / "test_strings.c",           120),
     ]:
         if not src.exists():
             R.skip(name, "source not found")

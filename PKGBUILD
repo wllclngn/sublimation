@@ -1,6 +1,6 @@
 # Maintainer: Will C.
 pkgname=sublimation
-pkgver=1.1.0
+pkgver=1.2.0
 pkgrel=1
 pkgdesc='Adaptive sorting library using spectral graph theory and flow-model architecture'
 arch=('x86_64')

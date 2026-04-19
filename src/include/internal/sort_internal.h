@@ -113,13 +113,11 @@ SUB_INLINE void sub_oscillator_update(float *position, float *velocity,
 
 // AVX2 random-data sort path (i64 only).
 //
-// sub_random_sort_i64 is the production SUB_RANDOM entry point: a learned
-// linear-PCF top-level bucketer feeding AVX2 quicksort with sort-network
-// leaves. sub_avx2_random_quicksort_i64 is the underlying engine, exported
-// because sub_random_sort_i64 also calls it to sort its training sample.
-//
-// See src/sort.c and research/RANDOM_EXPERIMENTS.md for the design history,
-// and research/MORATORIUM.md for the moratorium on grader-driven random work.
+// sub_random_sort_i64 is the production SUB_RANDOM entry point: a
+// linear-PCF top-level bucketer (Sato-Matsui 2024, static B per workload)
+// feeding AVX2 quicksort with sort-network leaves.
+// sub_avx2_random_quicksort_i64 is the underlying engine, exported because
+// sub_random_sort_i64 also calls it to sort its training sample.
 #ifdef __AVX2__
 void sub_random_sort_i64(int64_t *arr, size_t n);
 void sub_avx2_random_quicksort_i64(int64_t *arr, size_t n);

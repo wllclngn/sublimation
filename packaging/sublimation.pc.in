@@ -1,0 +1,12 @@
+prefix=@PREFIX@
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include/sublimation
+
+Name: sublimation
+Description: Flow-model adaptive sorting library (C23 core with Python, Rust, Go interfaces)
+URL: https://www.github.com/wllclngn/sublimation
+Version: @VERSION@
+Libs: -L${libdir} -lsublimation
+Libs.private: -lpthread -lm
+Cflags: -I${includedir}

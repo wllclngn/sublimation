@@ -35,6 +35,24 @@ INSTALL_PREFIX = Path("/usr/local")
 LIB_NAME = "sublimation"
 
 
+def _read_version() -> str:
+    """Single source of truth: SUBLIMATION_VERSION_STRING in sublimation.h."""
+    header = SRC_DIR / "include" / "sublimation.h"
+    try:
+        for line in header.read_text().splitlines():
+            if "SUBLIMATION_VERSION_STRING" in line and '"' in line:
+                return line.split('"')[1]
+    except OSError:
+        pass
+    return "0.0.0"
+
+
+VERSION = _read_version()
+
+# SOVERSION: bumped when ABI breaks. Independent from the release version.
+SOVERSION = VERSION.split(".")[0]
+
+
 # LOGGING
 
 def _timestamp() -> str:
@@ -188,15 +206,33 @@ def cmd_build(args, source_dir: Path) -> bool:
         return False
     log_info(f"Built: {static_lib} ({static_lib.stat().st_size} bytes)")
 
-    # Shared library
-    shared_lib = BUILD_DIR / f"lib{LIB_NAME}.so"
-    ld_harden = ["-Wl,-z,relro", "-Wl,-z,now", "-Wl,-z,noexecstack"]
-    cmd = ["gcc"] + c_flags + ["-shared", "-o", str(shared_lib)] + [str(o) for o in objects] + ["-lpthread", "-lm"] + ld_harden
+    # Shared library with SOVERSION
+    # Layout written to BUILD_DIR:
+    #   libsublimation.so.<VERSION>     -- the actual ELF (e.g. 1.2.0)
+    #   libsublimation.so.<SOVERSION>   -- soname symlink (e.g. 1)
+    #   libsublimation.so               -- unversioned dev symlink
+    # The soname baked into the ELF via `-Wl,-soname` is libsublimation.so.<SOVERSION>.
+    # ldconfig updates the symlinks from the versioned file's internal SONAME.
+    shared_versioned = BUILD_DIR / f"lib{LIB_NAME}.so.{VERSION}"
+    shared_soname    = BUILD_DIR / f"lib{LIB_NAME}.so.{SOVERSION}"
+    shared_lib       = BUILD_DIR / f"lib{LIB_NAME}.so"
+    ld_harden = ["-Wl,-z,relro", "-Wl,-z,now", "-Wl,-z,noexecstack",
+                 f"-Wl,-soname,lib{LIB_NAME}.so.{SOVERSION}"]
+    cmd = ["gcc"] + c_flags + ["-shared", "-o", str(shared_versioned)] + [str(o) for o in objects] + ["-lpthread", "-lm"] + ld_harden
     ret = run_cmd(cmd)
     if ret != 0:
         log_error("Shared library link failed")
         return False
-    log_info(f"Built: {shared_lib} ({shared_lib.stat().st_size} bytes)")
+    # Dev symlinks in BUILD_DIR so local bench binaries and tests find it.
+    for link in (shared_soname, shared_lib):
+        try:
+            if link.is_symlink() or link.exists():
+                link.unlink()
+            link.symlink_to(shared_versioned.name)
+        except OSError as e:
+            log_warn(f"Could not create symlink {link.name}: {e}")
+    log_info(f"Built: {shared_versioned} ({shared_versioned.stat().st_size} bytes)")
+    log_info(f"SONAME: lib{LIB_NAME}.so.{SOVERSION} -> {shared_versioned.name}")
 
     print()
 
@@ -248,9 +284,9 @@ def cmd_install(args, source_dir: Path) -> bool:
     log_info("INSTALLING")
 
     static_lib = BUILD_DIR / f"lib{LIB_NAME}.a"
-    shared_lib = BUILD_DIR / f"lib{LIB_NAME}.so"
+    shared_versioned = BUILD_DIR / f"lib{LIB_NAME}.so.{VERSION}"
 
-    if not static_lib.exists() and not shared_lib.exists():
+    if not static_lib.exists() and not shared_versioned.exists():
         log_warn("No libraries built (nothing to install)")
         return True
 
@@ -262,12 +298,21 @@ def cmd_install(args, source_dir: Path) -> bool:
             log_error("Failed to install static library")
             return False
 
-    if shared_lib.exists():
-        log_info(f"Installing {lib_dir / shared_lib.name}")
-        ret = run_cmd(["sudo", "install", "-Dm755", str(shared_lib), str(lib_dir / shared_lib.name)])
+    if shared_versioned.exists():
+        dest_versioned = lib_dir / shared_versioned.name
+        dest_soname    = lib_dir / f"lib{LIB_NAME}.so.{SOVERSION}"
+        dest_unversioned = lib_dir / f"lib{LIB_NAME}.so"
+        log_info(f"Installing {dest_versioned}")
+        ret = run_cmd(["sudo", "install", "-Dm755", str(shared_versioned), str(dest_versioned)])
         if ret != 0:
             log_error("Failed to install shared library")
             return False
+        # Soname symlink (libsublimation.so.1 -> libsublimation.so.1.2.0)
+        log_info(f"Linking {dest_soname} -> {shared_versioned.name}")
+        run_cmd(["sudo", "ln", "-sf", shared_versioned.name, str(dest_soname)])
+        # Unversioned dev symlink (libsublimation.so -> libsublimation.so.1)
+        log_info(f"Linking {dest_unversioned} -> lib{LIB_NAME}.so.{SOVERSION}")
+        run_cmd(["sudo", "ln", "-sf", f"lib{LIB_NAME}.so.{SOVERSION}", str(dest_unversioned)])
         run_cmd(["sudo", "ldconfig"])
 
     # Install headers
@@ -283,10 +328,46 @@ def cmd_install(args, source_dir: Path) -> bool:
                 log_error(f"Failed to install header: {h.name}")
                 return False
 
+    # Install pkg-config descriptor
+    pc_template = source_dir / "packaging" / f"{LIB_NAME}.pc.in"
+    if pc_template.exists():
+        pc_dir = lib_dir / "pkgconfig"
+        pc_dest = pc_dir / f"{LIB_NAME}.pc"
+        pc_content = pc_template.read_text()
+        pc_content = pc_content.replace("@PREFIX@", str(prefix))
+        pc_content = pc_content.replace("@VERSION@", VERSION)
+        pc_staged = BUILD_DIR / f"{LIB_NAME}.pc"
+        pc_staged.write_text(pc_content)
+        log_info(f"Installing {pc_dest}")
+        ret = run_cmd(["sudo", "install", "-Dm644", str(pc_staged), str(pc_dest)])
+        if ret != 0:
+            log_error("Failed to install pkg-config descriptor")
+            return False
+
+    # Install CMake package config
+    cmake_template_dir = source_dir / "packaging" / "cmake"
+    if cmake_template_dir.exists():
+        cmake_dest_dir = lib_dir / "cmake" / LIB_NAME.capitalize()
+        for cmake_file in cmake_template_dir.glob("*.in"):
+            content = cmake_file.read_text()
+            content = content.replace("@PREFIX@", str(prefix))
+            content = content.replace("@VERSION@", VERSION)
+            out_name = cmake_file.stem  # strips .in
+            staged = BUILD_DIR / out_name
+            staged.write_text(content)
+            dest = cmake_dest_dir / out_name
+            log_info(f"Installing {dest}")
+            ret = run_cmd(["sudo", "install", "-Dm644", str(staged), str(dest)])
+            if ret != 0:
+                log_error(f"Failed to install CMake config: {out_name}")
+                return False
+
     print()
     log_info("SUCCESS. Installation complete.")
     log_info(f"Library: {lib_dir}/lib{LIB_NAME}.{{a,so}}")
     log_info(f"Headers: {include_dir}/")
+    log_info(f"pkg-config: {lib_dir}/pkgconfig/{LIB_NAME}.pc")
+    log_info(f"CMake: {lib_dir}/cmake/{LIB_NAME.capitalize()}/")
     return True
 
 

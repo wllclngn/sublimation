@@ -1,0 +1,32 @@
+# SublimationConfig.cmake -- CMake package config for libsublimation
+#
+# Usage in a downstream project:
+#   find_package(Sublimation REQUIRED)
+#   target_link_libraries(my_target PRIVATE Sublimation::sublimation)
+#
+# Variables set:
+#   Sublimation_FOUND        - TRUE when all files located
+#   Sublimation_VERSION      - full version string (e.g. "1.2.0")
+#   Sublimation_INCLUDE_DIRS - path to installed headers
+#   Sublimation_LIBRARIES    - full path to libsublimation.so
+#
+# Imported target: Sublimation::sublimation (preferred — handles includes and
+#                                            transitive dependencies).
+
+set(Sublimation_VERSION      "@VERSION@")
+set(Sublimation_INCLUDE_DIRS "@PREFIX@/include/sublimation")
+set(Sublimation_LIBRARIES    "@PREFIX@/lib/libsublimation.so")
+
+include(CMakeFindDependencyMacro)
+find_dependency(Threads)
+
+if(NOT TARGET Sublimation::sublimation)
+    add_library(Sublimation::sublimation SHARED IMPORTED)
+    set_target_properties(Sublimation::sublimation PROPERTIES
+        IMPORTED_LOCATION             "@PREFIX@/lib/libsublimation.so"
+        INTERFACE_INCLUDE_DIRECTORIES "@PREFIX@/include/sublimation"
+        INTERFACE_LINK_LIBRARIES      "Threads::Threads;m"
+    )
+endif()
+
+set(Sublimation_FOUND TRUE)
